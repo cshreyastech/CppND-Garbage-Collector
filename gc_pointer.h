@@ -2,8 +2,10 @@
 #include <list>
 #include <typeinfo>
 #include <cstdlib>
+#include <algorithm>
 #include "gc_details.h"
 #include "gc_iterator.h"
+
 /*
   Pointer implements a pointer type that uses
   garbage collection to release unused memory.
@@ -49,6 +51,10 @@ public:
   // Collect garbage. Returns true if at least
   // one object was freed.
   static bool collect();
+
+  void swap(Pointer<T, size> &first, Pointer<T, size> &second);
+
+
   // Overload assignment of pointer to Pointer.
   T *operator=(T *t);
   // Overload assignment of Pointer to Pointer.
@@ -91,6 +97,18 @@ public:
   static void shutdown();
 };
 
+// Swap method
+template<typename T, int size>
+void Pointer<T,size>::swap(Pointer<T, size> &first, Pointer<T, size> &second) {
+  // enable ADL . Nice link on ADL https://en.cppreference.com/w/cpp/language/adl
+  using std::swap;
+
+  std::swap(first.addr, second.addr);
+  std::swap(first.isArray, second.isArray);
+  std::swap(first.arraySize, second.arraySize);
+}
+
+
 // STATIC INITIALIZATION
 // Creates storage for the static variables
 template <class T, int size>
@@ -101,46 +119,31 @@ bool Pointer<T, size>::first = true;
 // Constructor for both initialized and uninitialized objects. -> see class interface
 template<class T,int size>
 Pointer<T,size>::Pointer(T *t){
-  // Register shutdown() as an exit function.
+
   if (first)
-    atexit(shutdown);
+    atexit(shutdown); // Read about atexit function after these codeblocks
   first = false;
 
-  // TODO: Implement Pointer constructor
-  // Lab: Smart Pointer Project Lab
-  typename std::list<PtrDetails<T>>::iterator p;
-  p = findPtrInfo(t);
+  addr = t;
+  isArray = (size > 0);
+  arraySize = size;
 
-  if(p == refContainer.end())
-  {
-    PtrDetails<T> newPtr(t, size);
-
-    if(size > 0)
-    {
-      isArray = true;
-      arraySize = size;
-    }
-    refContainer.emplace_back(newPtr);
+  auto ptr_info_it = findPtrInfo(t);
+  if (ptr_info_it != refContainer.end()) {
+    ++ptr_info_it->refcount;
+  } else {
+    PtrDetails<T> ptr_details(t, size);
+    ptr_details.refcount = 1;
+    ptr_details.memPtr = t;
+    ptr_details.isArray = isArray;
+    ptr_details.arraySize = arraySize;
+    refContainer.push_back(ptr_details);
   }
-  else 
-  {
-    p->refcount++;
-  }
-  this->addr = t;
 }
 // Copy constructor.
 template< class T, int size>
-Pointer<T,size>::Pointer(const Pointer &ob){
-  typename std::list<PtrDetails<T> >::iterator p;
-  p = findPtrInfo(ob.addr);
-
-  // TODO: Implement Pointer constructor
-  // Lab: Smart Pointer Project Lab
-  p->refcount++;
-  this->isArray = ob.isArray;
-  this->arraySize = ob.arraySize;
-  this->addr = ob.addr;
-}
+Pointer<T,size>::Pointer(const Pointer &ob)
+ : Pointer(ob.addr) {}
 
 // Destructor for Pointer.
 template <class T, int size>
@@ -163,59 +166,32 @@ bool Pointer<T, size>::collect(){
   // LAB: New and Delete Project Lab
   // Note: collect() will be called in the destructor
 
-    bool memfreed = false;
-    typename std::list<PtrDetails<T> >::iterator p;
-    do{
-      // Scan refContainer looking for unreferenced pointers.
-      for (p = refContainer.begin(); p != refContainer.end(); p++){
-        // If in-use, skip.
-        if (p->refcount > 0)
-          continue;
-        memfreed = true;
-        // Remove unused entry from refContainer.
-        refContainer.remove(*p);
+    bool deleted = false;
 
-        // Free memory unless the Pointer is null.
-        if (p->memPtr){
-          if (p->isArray){
-              delete[] p->memPtr; // delete array
-          }
-          else{
-              delete p->memPtr; // delete single element
-          }
+    auto removeIf = [&deleted](const PtrDetails<T> &ptrDetails) {
+        if (ptrDetails.refcount == 0) {
+            //This is your ternary operator more details are after this codeblock.
+            ptrDetails.isArray ? delete[] ptrDetails.memPtr : delete ptrDetails.memPtr;
+            deleted = true;
+            return true;
         }
-        // Restart the search.
-        break;
-      }
-    } while (p != refContainer.end());
-    return memfreed;
+        return false;
+    };
+
+    // move unwanted items to end
+    auto new_end = std::remove_if(refContainer.begin(), refContainer.end(), removeIf);
+
+    // erase items from end of list
+    refContainer.erase(new_end, refContainer.end());
+
+    return deleted;
 }
 
 // Overload assignment of pointer to Pointer.
 template <class T, int size>
 T *Pointer<T, size>::operator=(T *t){
-  // TODO: Implement operator==
-  // LAB: Smart Pointer Project Lab
-  typename std::list<PtrDetails<T>>::iterator p;
-  p = findPtrInfo(t);
-
-  if(p == refContainer.end())
-  {
-    PtrDetails<T> newPtr(t, size);
-
-    if(size > 0)
-    {
-      isArray = true;
-      arraySize = size;
-    }
-    refContainer.emplace_back(newPtr);
-  }
-  else 
-  {
-    p->refcount++;
-  }
-  this->addr = t;
-
+  Pointer<T, size> temp(t);
+  swap(*this, temp);
   return t;
 }
 // Overload assignment of Pointer to Pointer.
@@ -223,21 +199,7 @@ template <class T, int size>
 Pointer<T, size> &Pointer<T, size>::operator=(Pointer &rv){
   // TODO: Implement operator==
   // LAB: Smart Pointer Project Lab
-  if(*this == rv ) return this;
-  
-  typename std::list<PtrDetails<T>>::iterator p;
-  p = findPtrInfo(rv);
-
-  p->refcount--;
-  if(p->refcount == 0)collect();
-
-  p = findPtrInfo(rv.addr);
-  p->refcount++;
-
-  this->addr = rv.addr;
-  this->isArray = rv.isArray;
-  this->arraySize = rv.arraySize;
-  
+  swap(*this, rv);
   return *this;
 }
 
